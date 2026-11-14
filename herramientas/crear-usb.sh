@@ -63,6 +63,13 @@ for particion in $(lsblk -lnpo NAME "$DISCO" | tail -n +2); do
     umount "$particion" 2>/dev/null || true
 done
 
+# Borra tablas de particiones anteriores (principal y copia del final del disco),
+# para que no queden restos de otra grabación.
+sgdisk --zap-all "$DISCO" >/dev/null 2>&1 || true
+wipefs -a "$DISCO" >/dev/null 2>&1 || true
+partprobe "$DISCO" || true
+sleep 2
+
 echo "Grabando la ISO (tarda unos minutos)..."
 dd if="$ISO" of="$DISCO" bs=4M conv=fsync status=progress
 sync
