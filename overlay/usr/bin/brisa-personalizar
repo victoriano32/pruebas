@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Personalizar Brisa: panel, icono del botón de menú, tema de iconos y colores."""
+
+import configparser
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
+    QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QGroupBox,
+    QHBoxLayout, QLabel, QListView, QListWidget, QListWidgetItem, QPushButton,
+    QRadioButton, QVBoxLayout,
+)
+
+DIR_DISPOSICIONES = Path("/usr/share/brisa/disposiciones")
+DIR_ICONOS_MENU = Path("/usr/share/icons/hicolor/scalable/apps")
+DIR_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "brisa"
+FICHERO_CONFIG = DIR_CONFIG / "personalizar.json"
+MARCA_BIENVENIDA = DIR_CONFIG / "bienvenida-hecha"
+
+DISPOSICIONES = [
+    ("dock", "Dock", "Panel flotante centrado abajo, del tamaño de su contenido"),
+    ("barra", "Barra", "Barra flotante abajo que ocupa todo el ancho"),
+    ("superior", "Barra superior y dock", "Barra fina arriba y dock flotante abajo"),
+]
+ACENTOS = [
+    ("Violeta", "#7f77dd"), ("Azul", "#378add"), ("Verde", "#1d9e75"),
+    ("Ámbar", "#ef9f27"), ("Coral", "#d85a30"), ("Rosa", "#d4537e"),
+]
+TIPOS_MENU = ["org.kde.plasma.kickoff", "org.kde.plasma.kicker", "org.kde.plasma.kickerdash"]
+
+
+def leer_config():
+    try:
+        return json.loads(FICHERO_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def guardar_config(datos):
+    DIR_CONFIG.mkdir(parents=True, exist_ok=True)
+    FICHERO_CONFIG.write_text(json.dumps(datos, indent=2), encoding="utf-8")
+
+
+def ejecutar(orden):
+    """Ejecuta una orden y devuelve (ok, mensaje)."""
+    try:
+        r = subprocess.run(orden, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, str(error)
+    return r.returncode == 0, (r.stderr or r.stdout).strip()
+
+
+def evaluar_en_plasma(guion):
+    """Envía un guion de escritorio a plasmashell."""
+    try:
+        from PyQt6.QtDBus import QDBusConnection, QDBusInterface
+        interfaz = QDBusInterface("org.kde.plasmashell", "/PlasmaShell",
+                                  "org.kde.PlasmaShell", QDBusConnection.sessionBus())
+        if interfaz.isValid():
+            respuesta = interfaz.call("evaluateScript", guion)
+            if not respuesta.errorName():
+                return True, ""
+            return False, respuesta.errorMessage()
+    except ImportError:
+        pass
+    if shutil.which("gdbus"):
+        return ejecutar(["gdbus", "call", "--session", "--dest", "org.kde.plasmashell",
+                         "--object-path", "/PlasmaShell",
+                         "--method", "org.kde.PlasmaShell.evaluateScript", json.dumps(guion)])
+    for qdbus in ("qdbus6", "qdbus-qt6", "qdbus"):
+        if shutil.which(qdbus):
+            return ejecutar([qdbus, "org.kde.plasmashell", "/PlasmaShell",
+                             "org.kde.PlasmaShell.evaluateScript", guion])
+    return False, "No se pudo hablar con Plasma (falta QtDBus, gdbus y qdbus)"
+
+
+def texto_js(valor):
+    """Valor seguro para incrustarlo entre comillas dobles en JavaScript."""
+    return json.dumps(valor)[1:-1]
+
+
+def aplicar_disposicion(nombre, icono):
+    plantilla = (DIR_DISPOSICIONES / f"{nombre}.js").read_text(encoding="utf-8")
+    guion = ("var viejos = panels();\n"
+             "for (var k = viejos.length - 1; k >= 0; k--) { viejos[k].remove(); }\n"
+             + plantilla.replace("@ICONO_MENU@", texto_js(icono)))
+    return evaluar_en_plasma(guion)
+
+
+def aplicar_icono_menu(icono):
+    guion = (
+        "var tipos = " + json.dumps(TIPOS_MENU) + ";\n"
+        "var ps = panels();\n"
+        "for (var i = 0; i < ps.length; i++) {\n"
+        "  var ids = ps[i].widgetIds;\n"
+        "  for (var j = 0; j < ids.length; j++) {\n"
+        "    var w = ps[i].widgetById(ids[j]);\n"
+        "    if (w && tipos.indexOf(w.type) >= 0) {\n"
+        "      w.currentConfigGroup = ['General'];\n"
+        "      w.writeConfig('icon', \"" + texto_js(icono) + "\");\n"
+        "      w.reloadConfig();\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    return evaluar_en_plasma(guion)
+
+
+def temas_de_iconos():
+    """Lista (id, nombre visible) de los temas de iconos instalados."""
+    temas = {}
+    carpetas = ["/usr/share/icons", str(Path.home() / ".local/share/icons"), str(Path.home() / ".icons")]
+    for carpeta in carpetas:
+        for indice in sorted(glob.glob(os.path.join(carpeta, "*", "index.theme"))):
+            ident = os.path.basename(os.path.dirname(indice))
+            if ident in ("hicolor", "default", "locolor"):
+                continue
+            lector = configparser.ConfigParser(interpolation=None, strict=False)
+            try:
+                lector.read(indice, encoding="utf-8")
+                seccion = lector["Icon Theme"]
+            except (configparser.Error, KeyError, UnicodeDecodeError):
+                continue
+            if not seccion.get("Directories") or seccion.get("Hidden", "false").lower() == "true":
+                continue
+            temas.setdefault(ident, seccion.get("Name", ident))
+    return sorted(temas.items(), key=lambda t: t[1].lower())
+
+
+def leer_kde(grupo, clave, defecto=""):
+    ok, salida = ejecutar(["kreadconfig6", "--file", "kdeglobals", "--group", grupo, "--key", clave])
+    return salida if ok and salida else defecto
+
+
+def aplicar_tema_iconos(ident):
+    candidatos = glob.glob("/usr/lib/*/libexec/plasma-changeicons") + ["/usr/libexec/plasma-changeicons"]
+    for programa in candidatos:
+        if os.path.exists(programa):
+            return ejecutar([programa, ident])
+    return ejecutar(["kwriteconfig6", "--file", "kdeglobals", "--group", "Icons", "--key", "Theme", ident])
+
+
+class Ventana(QDialog):
+    def __init__(self, primera_vez=False):
+        super().__init__()
+        self.config = leer_config()
+        self.disposicion_inicial = self.config.get("disposicion", "dock")
+        self.icono_inicial = self.config.get("icono_menu", "brisa-menu-brisa")
+        self.icono_elegido = self.icono_inicial
+        self.tema_iconos_inicial = leer_kde("Icons", "Theme", "")
+        self.esquema_inicial = leer_kde("General", "ColorScheme", "BreezeDark")
+        self.acento_elegido = None
+
+        self.setWindowTitle("Personalizar Brisa")
+        self.setWindowIcon(QIcon.fromTheme("brisa-personalizar"))
+        self.setMinimumWidth(620)
+        caja = QVBoxLayout(self)
+
+        if primera_vez:
+            saludo = QLabel("<h2>Te damos la bienvenida a Brisa</h2>"
+                            "Elige cómo quieres tu escritorio. Puedes volver a esta ventana "
+                            "cuando quieras desde el menú: «Personalizar Brisa».")
+            saludo.setWordWrap(True)
+            caja.addWidget(saludo)
+
+        # --- Panel ---
+        grupo_panel = QGroupBox("Panel")
+        caja_panel = QVBoxLayout(grupo_panel)
+        self.botones_panel = QButtonGroup(self)
+        for ident, nombre, descripcion in DISPOSICIONES:
+            boton = QRadioButton(f"{nombre}: {descripcion}")
+            boton.setProperty("ident", ident)
+            boton.setChecked(ident == self.disposicion_inicial)
+            self.botones_panel.addButton(boton)
+            caja_panel.addWidget(boton)
+        caja.addWidget(grupo_panel)
+
+        # --- Icono del botón de menú ---
+        grupo_menu = QGroupBox("Icono del botón de menú")
+        caja_menu = QVBoxLayout(grupo_menu)
+        self.lista_iconos = QListWidget()
+        self.lista_iconos.setViewMode(QListView.ViewMode.IconMode)
+        self.lista_iconos.setIconSize(QSize(48, 48))
+        self.lista_iconos.setGridSize(QSize(92, 84))
+        self.lista_iconos.setResizeMode(QListView.ResizeMode.Adjust)
+        self.lista_iconos.setMovement(QListView.Movement.Static)
+        self.lista_iconos.setWordWrap(True)
+        self.lista_iconos.setFixedHeight(190)
+        for fichero in sorted(DIR_ICONOS_MENU.glob("brisa-menu-*.svg")):
+            nombre = fichero.stem
+            elemento = QListWidgetItem(QIcon(str(fichero)),
+                                       nombre.replace("brisa-menu-", "").replace("-", " ").capitalize())
+            elemento.setData(Qt.ItemDataRole.UserRole, nombre)
+            self.lista_iconos.addItem(elemento)
+            if nombre == self.icono_inicial:
+                self.lista_iconos.setCurrentItem(elemento)
+        self.lista_iconos.currentItemChanged.connect(self.icono_de_la_lista)
+        caja_menu.addWidget(self.lista_iconos)
+        fila_menu = QHBoxLayout()
+        self.etiqueta_imagen = QLabel("")
+        boton_imagen = QPushButton("Usar otra imagen…")
+        boton_imagen.clicked.connect(self.elegir_imagen)
+        fila_menu.addWidget(self.etiqueta_imagen, 1)
+        fila_menu.addWidget(boton_imagen)
+        caja_menu.addLayout(fila_menu)
+        caja.addWidget(grupo_menu)
+
+        # --- Aspecto ---
+        grupo_aspecto = QGroupBox("Aspecto")
+        caja_aspecto = QVBoxLayout(grupo_aspecto)
+
+        fila_iconos = QHBoxLayout()
+        fila_iconos.addWidget(QLabel("Tema de iconos:"))
+        self.combo_iconos = QComboBox()
+        for ident, nombre in temas_de_iconos():
+            self.combo_iconos.addItem(nombre, ident)
+        posicion = self.combo_iconos.findData(self.tema_iconos_inicial)
+        if posicion >= 0:
+            self.combo_iconos.setCurrentIndex(posicion)
+        fila_iconos.addWidget(self.combo_iconos, 1)
+        caja_aspecto.addLayout(fila_iconos)
+
+        fila_modo = QHBoxLayout()
+        fila_modo.addWidget(QLabel("Colores:"))
+        self.modo_oscuro = QRadioButton("Oscuro")
+        self.modo_claro = QRadioButton("Claro")
+        self.botones_modo = QButtonGroup(self)
+        self.botones_modo.addButton(self.modo_oscuro)
+        self.botones_modo.addButton(self.modo_claro)
+        if "dark" in self.esquema_inicial.lower():
+            self.modo_oscuro.setChecked(True)
+        elif "light" in self.esquema_inicial.lower():
+            self.modo_claro.setChecked(True)
+        fila_modo.addWidget(self.modo_oscuro)
+        fila_modo.addWidget(self.modo_claro)
+        fila_modo.addStretch(1)
+        caja_aspecto.addLayout(fila_modo)
+
+        fila_acento = QHBoxLayout()
+        fila_acento.addWidget(QLabel("Color de acento:"))
+        self.botones_acento = QButtonGroup(self)
+        for nombre, color in ACENTOS:
+            boton = QPushButton()
+            boton.setCheckable(True)
+            boton.setFixedSize(30, 30)
+            boton.setToolTip(nombre)
+            boton.setAccessibleName(nombre)
+            boton.setStyleSheet(
+                f"QPushButton {{ background: {color}; border-radius: 15px; border: 2px solid transparent; }}"
+                f"QPushButton:checked {{ border: 3px solid palette(text); }}")
+            boton.setProperty("color", color)
+            self.botones_acento.addButton(boton)
+            fila_acento.addWidget(boton)
+        self.botones_acento.buttonClicked.connect(self.acento_pulsado)
+        fila_acento.addStretch(1)
+        caja_aspecto.addLayout(fila_acento)
+
+        fila_mas = QHBoxLayout()
+        for texto, modulo in (("Temas globales…", "kcm_lookandfeel"), ("Más iconos…", "kcm_icons"),
+                              ("Fondos…", "kcm_wallpaper"), ("Cursores…", "kcm_cursortheme")):
+            boton = QPushButton(texto)
+            boton.clicked.connect(lambda _=False, m=modulo: subprocess.Popen(["kcmshell6", m]))
+            fila_mas.addWidget(boton)
+        caja_aspecto.addLayout(fila_mas)
+        caja.addWidget(grupo_aspecto)
+
+        # --- Pie ---
+        self.estado = QLabel("")
+        self.estado.setWordWrap(True)
+        caja.addWidget(self.estado)
+        fila_pie = QHBoxLayout()
+        fila_pie.addStretch(1)
+        boton_aplicar = QPushButton("Aplicar")
+        boton_aplicar.setDefault(True)
+        boton_aplicar.clicked.connect(self.aplicar)
+        boton_cerrar = QPushButton("Cerrar")
+        boton_cerrar.clicked.connect(self.close)
+        fila_pie.addWidget(boton_aplicar)
+        fila_pie.addWidget(boton_cerrar)
+        caja.addLayout(fila_pie)
+
+    def icono_de_la_lista(self, elemento, _anterior=None):
+        if elemento is not None:
+            self.icono_elegido = elemento.data(Qt.ItemDataRole.UserRole)
+            self.etiqueta_imagen.setText("")
+
+    def elegir_imagen(self):
+        fichero, _ = QFileDialog.getOpenFileName(
+            self, "Elegir imagen para el botón de menú", str(Path.home()),
+            "Imágenes (*.svg *.svgz *.png *.jpg *.jpeg *.webp)")
+        if fichero:
+            self.icono_elegido = fichero
+            self.lista_iconos.clearSelection()
+            self.lista_iconos.setCurrentItem(None)
+            self.etiqueta_imagen.setText(f"Imagen elegida: {os.path.basename(fichero)}")
+
+    def acento_pulsado(self, boton):
+        self.acento_elegido = boton.property("color")
+
+    def aplicar(self):
+        errores = []
+        hechos = []
+
+        def anotar(nombre, resultado):
+            ok, mensaje = resultado
+            if ok:
+                hechos.append(nombre)
+            else:
+                errores.append(f"{nombre}: {mensaje or 'error'}")
+            return ok
+
+        boton = self.botones_panel.checkedButton()
+        disposicion = boton.property("ident") if boton else self.disposicion_inicial
+
+        if disposicion != self.disposicion_inicial:
+            if anotar("panel", aplicar_disposicion(disposicion, self.icono_elegido)):
+                self.disposicion_inicial = disposicion
+                self.icono_inicial = self.icono_elegido
+        elif self.icono_elegido != self.icono_inicial:
+            if anotar("icono del menú", aplicar_icono_menu(self.icono_elegido)):
+                self.icono_inicial = self.icono_elegido
+
+        tema = self.combo_iconos.currentData()
+        if tema and tema != self.tema_iconos_inicial:
+            if anotar("iconos", aplicar_tema_iconos(tema)):
+                self.tema_iconos_inicial = tema
+
+        esquema = None
+        if self.modo_oscuro.isChecked() and "dark" not in self.esquema_inicial.lower():
+            esquema = "BreezeDark"
+        elif self.modo_claro.isChecked() and "light" not in self.esquema_inicial.lower():
+            esquema = "BreezeLight"
+        if esquema:
+            if anotar("colores", ejecutar(["plasma-apply-colorscheme", esquema])):
+                self.esquema_inicial = esquema
+
+        if self.acento_elegido:
+            anotar("color de acento",
+                   ejecutar(["plasma-apply-colorscheme", "--accent-color", self.acento_elegido]))
+            self.acento_elegido = None
+
+        self.config.update({"disposicion": self.disposicion_inicial, "icono_menu": self.icono_inicial})
+        try:
+            guardar_config(self.config)
+        except OSError as error:
+            errores.append(f"guardar ajustes: {error}")
+
+        if errores:
+            self.estado.setText("No se pudo aplicar: " + "; ".join(errores))
+        elif hechos:
+            self.estado.setText("Aplicado: " + ", ".join(hechos) + ".")
+        else:
+            self.estado.setText("No hay cambios que aplicar.")
+
+
+def main():
+    primera_vez = "--primera-vez" in sys.argv[1:]
+    if primera_vez:
+        if MARCA_BIENVENIDA.exists():
+            return 0
+        try:
+            DIR_CONFIG.mkdir(parents=True, exist_ok=True)
+            MARCA_BIENVENIDA.touch()
+        except OSError:
+            pass
+    aplicacion = QApplication(sys.argv)
+    aplicacion.setApplicationName("brisa-personalizar")
+    aplicacion.setDesktopFileName("brisa-personalizar")
+    ventana = Ventana(primera_vez)
+    ventana.show()
+    return aplicacion.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

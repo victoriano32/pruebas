@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Personalizar Brisa
+Comment=Elige el panel, el icono del menú, los iconos y los colores
+Exec=brisa-personalizar
+Icon=brisa-personalizar
+Categories=Settings;Qt;KDE;
+Keywords=tema;iconos;panel;menu;colores;apariencia;
+Terminal=false

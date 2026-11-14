@@ -1,0 +1,9 @@
+[KDE]
+LookAndFeelPackage=org.brisa.desktop
+SingleClick=false
+
+[General]
+AccentColor=127,119,221
+
+[Icons]
+Theme=Papirus-Dark

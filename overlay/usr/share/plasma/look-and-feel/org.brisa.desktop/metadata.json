@@ -1,0 +1,17 @@
+{
+    "KPackageStructure": "Plasma/LookAndFeel",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Brisa"
+            }
+        ],
+        "Category": "",
+        "Description": "Tema global de Brisa: dock flotante, iconos Papirus y colores oscuros con acento violeta",
+        "Id": "org.brisa.desktop",
+        "License": "GPL-2.0-or-later",
+        "Name": "Brisa",
+        "Version": "0.1"
+    },
+    "X-Plasma-APIVersion": "2"
+}

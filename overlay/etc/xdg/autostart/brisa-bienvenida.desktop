@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Bienvenida de Brisa
+Exec=brisa-personalizar --primera-vez
+Icon=brisa-personalizar
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+Terminal=false

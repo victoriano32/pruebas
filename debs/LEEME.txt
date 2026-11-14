@@ -1,0 +1,2 @@
+Copia aquí los paquetes .deb de tus propias aplicaciones (Pasarela, Vigía, Lienzo...).
+Todo .deb que haya en esta carpeta se instala en la distro al compilar la ISO.
