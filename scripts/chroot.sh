@@ -132,7 +132,16 @@ fi
 
 paso "Paquetes .deb propios (carpeta debs/)"
 if compgen -G "/construccion/debs/*.deb" >/dev/null; then
-    $APT install /construccion/debs/*.deb || aviso "algún .deb propio no se pudo instalar"
+    for deb in /construccion/debs/*.deb; do
+        if $APT install "$deb"; then
+            echo "Instalado: $(basename "$deb")"
+        else
+            aviso "no se pudo instalar el .deb propio: $(basename "$deb")"
+            # Que un paquete a medias no bloquee los siguientes
+            dpkg --remove --force-remove-reinstreq "$(dpkg-deb -f "$deb" Package)" 2>/dev/null || true
+            $APT -f install || true
+        fi
+    done
 else
     echo "No hay .deb propios."
 fi
