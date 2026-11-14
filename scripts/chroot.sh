@@ -87,7 +87,9 @@ while IFS= read -r linea; do
     if [ "${linea:0:1}" = "!" ]; then
         esenciales+=("${linea:1}")
     else
-        if apt-cache policy "$linea" 2>/dev/null | grep -q 'Candidate: [^(]'; then
+        # Sin tubería: con "pipefail", grep -q corta a apt-cache y la comprobación falla al azar.
+        politica="$(apt-cache policy "$linea" 2>/dev/null || true)"
+        if grep -q 'Candidate: [^(]' <<<"$politica"; then
             opcionales+=("$linea")
         else
             aviso "paquete no disponible, se omite: $linea"

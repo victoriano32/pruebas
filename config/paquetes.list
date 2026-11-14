@@ -113,8 +113,6 @@ plasma-discover-backend-fwupd
 
 # --- Personalización: temas, iconos, cursores y fuentes ---
 papirus-icon-theme
-qt6-style-kvantum
-qt6-style-kvantum-themes
 qt-style-kvantum
 bibata-cursor-theme
 oxygen-cursor-theme
